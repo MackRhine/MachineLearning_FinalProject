@@ -1,0 +1,1495 @@
+---
+title: "pstat131_project"
+author: "Michael Rhine-6342398"
+date: "12/16/2020"
+output: html_document
+---
+
+# **PSTAT 131 FINAL PROJECT: 2020 ELELECTION ANALYSIS**
+
+**Professor Guo Yu)**
+**Michael Rhine 6342398**
+**December 17, 2020**
+```{r setup, include=FALSE, echo=FALSE}
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(maps)
+library(ROCR)
+library(ggridges)
+library(dendextend)
+library(e1071)
+library(ISLR)
+library(tree)
+library(maptree)
+library(glmnet)
+library(class)
+library(FNN)
+library(randomForest)
+library(gbm)
+```
+
+## **DATA**
+
+Load in the two data sets. The first data-set is/was the latest data of the 2020 US Election. The second data-set is the 2017 United State county-level census data.
+
+Use the given code to load in the data.
+```{r, echo=FALSE, message=FALSE}
+## read data and convert candidate names and party names from string to factor
+election.raw <- read_csv("candidates_county.csv", col_names = TRUE) %>% 
+  mutate(candidate = as.factor(candidate), party = as.factor(party))
+
+## remove the word "County" from the county names
+words.to.remove = c("County")
+remove.words <- function(str, words.to.remove){
+  sapply(str, function(str){
+    x <- unlist(strsplit(str, " "))
+    x <- x[!x %in% words.to.remove]
+    return(paste(x, collapse = " "))
+  }, simplify = "array", USE.NAMES = FALSE)
+}
+election.raw$county <- remove.words(election.raw$county, words.to.remove)
+
+## read census data
+census <- read_csv("census_county.csv")
+census$County <- remove.words(census$County, words.to.remove)
+```
+
+### **1.ELECTION DATA**
+*Report the dimension of election.raw. Are there missing values in the data set? Compute the total number of distinct values in state in election.raw to verify that the data contains all states and a federal district.*
+```{r, echo=FALSE, message=FALSE}
+
+#Dimensions
+dim(election.raw)
+#Total # of distinct values
+length(unique(election.raw$state))
+```
+  The dimensions for election.raw is 31,167 rows by 5 columns.
+
+  To compute the total number of distinct values in state in the data-set, we can generate a vector for all unique values in the state column. Then, we can compute the length to get a value of 51, which tells us that all states and the District of Columbia are contained in the data.
+  
+### **2. CENSUS DATA**
+*Report the dimension of census. Are there missing values in the data set? Compute the total number of distinct values in county in census. Compare the values of total number of distinct county in census with that in election.raw. Comment on your findings.*
+
+```{r, echo=F}
+paste("Dimensions of census: ", dim(census))
+
+#Any missing data
+paste("Does census contain missing data? ", sum(is.na(census)))
+
+#Total # of distinct values for county & State
+paste("Number of census counties: ", length(unique(census$County)) )
+paste("Number of election.raw counties: ", length(unique(election.raw$county)) )
+```
+
+```{r}
+#Find missing data
+apply(is.na(census),2,which)
+```
+```{r}
+#Replace missing values with mean value for ChildPoverty
+new_val = mean(census$ChildPoverty, na.rm=TRUE)
+census$ChildPoverty[is.na(census$ChildPoverty)] = new_val
+```
+
+```{r}
+#Double Check
+apply(is.na(census),2,which)
+```
+
+## **DATA WRANGLING**
+
+### **3.**
+*Construct aggregated data sets from election.raw data: ie.,*
+*Keep the county-level data as it is in election.raw.* 
+*Create a state-level summary into a election.state.*
+*Create a federal-level summary into a election.total.*
+
+```{r, echo=FALSE}
+#election.county
+election.county <- election.raw
+head(election.county)
+#election.state
+election.state <- election.raw %>% group_by(state,candidate) %>% summarise(votes=sum(votes))
+head(election.state)
+#election.total
+election.total <- election.state %>% group_by(candidate) %>% summarise(votes=sum(votes))
+election.total <- election.total[order(election.total$votes, decreasing=T),]
+head(election.total)
+```
+```{r}
+paste("Dimensions of election.county (votes per candidate per county):",dim(election.county))
+paste("Dimensions of election.state (votes per candidate per state):", dim(election.state))
+paste("Dimensions of election.total (total votes per candidate):", dim(election.total))
+```
+
+### **4.**
+*How many named presidential candidates were there in the 2020 election? Draw a bar chart of all votes received by each candidate. You can split this into multiple plots or may prefer to plot the results on a log scale. Either way, the results should be clear and legible! (For fun: spot Kanye West among the presidential candidates!)*
+
+```{r, echo=F}
+#How many were in the election
+dim(election.total)
+
+ggplot(data=election.total, aes(x=reorder(candidate,-votes))) + 
+  geom_bar(aes(y=log(votes)), stat='identity', fill='steelblue') +
+  theme(axis.text.x=element_text(color='black',size=7,angle=90)) 
+```
+
+  We can take the number of dimensions for election.total to get the number of candidates voted on in the election. There were 38 overall. Kanye West is the 8th column from the left.
+  However, it would not be fair to say that the election may be decided by more than 2 candidates. The following plots point out the obvious, Joe Biden and Donald Trump were the most likely candidates for president. We will likely see in our models that their will be no predictions for any candidate besides these two.
+```{r}
+#remove scientific notation
+options(scipen=999)
+#Seperating election total into subsets by votes
+el.tot_1 = election.total[1:3,]
+el.tot_2 = election.total[3:12,]
+el.tot_3 = election.total[13:38,]
+
+
+el.tot_1.plot <- ggplot(data=el.tot_1, aes(x=reorder(candidate,-votes))) + 
+  geom_bar(aes(y=votes), stat='identity', fill='steelblue') +
+  theme(axis.text.x=element_text(color='black',size=7,angle=90)) 
+
+el.tot_2.plot <- ggplot(data=el.tot_2, aes(x=reorder(candidate,-votes))) + 
+  geom_bar(aes(y=votes), stat='identity', fill='steelblue') +
+  theme(axis.text.x=element_text(color='black',size=7,angle=90)) 
+
+el.tot_3.plot <- ggplot(data=el.tot_3, aes(x=reorder(candidate,-votes))) + 
+  geom_bar(aes(y=votes), stat='identity', fill='steelblue') +
+  theme(axis.text.x=element_text(color='black',size=7,angle=90))
+
+
+```
+```{r}
+grid.arrange(el.tot_1.plot,el.tot_2.plot,el.tot_3.plot,
+             layout_matrix = rbind(c(1,2,NA),
+                                   c(3,3,NA)))
+```
+
+  
+### **5.**
+*Create data sets county.winner and state.winner by taking the candidate with the highest proportion of votes in both county level and state level. Hint: to create county.winner, start with election.raw, group by county, compute total votes, and pct = votes/total as the proportion of votes. Then choose the highest row using top_n (variable state.winner is similar).*
+```{r, echo=F}
+#county.winner
+
+county.winner <- election.raw %>% 
+  group_by(county) %>% 
+  mutate(total=sum(votes)) %>%
+  mutate(pct=votes/total) %>%
+  top_n(n=1, wt=pct)
+county.winner
+
+#state.winner
+state.winner <- election.state %>%
+  group_by(state) %>%
+  mutate(total=sum(votes)) %>%
+  mutate(pct=votes/total) %>%
+  top_n(n=1, wt=pct)
+state.winner
+```
+
+## **VISUALIZATION**
+```{r, echo=F}
+states <- map_data("state")
+
+ggplot(data = states) + 
+  geom_polygon(aes(x = long, y = lat, fill = region, group = group),
+               color = "white") + 
+  coord_fixed(1.3) +
+  guides(fill=FALSE)  # color legend is unnecessary and takes too long
+```
+  
+### **6.**
+*Use similar code to above to draw county-level map by creating counties = map_data("county"). Color by county.*
+```{r, echo=F}
+counties = map_data('county')
+
+ggplot(data=counties)+
+  geom_polygon(aes(x=long, y=lat, fill=region, group=group), color='white') +
+  coord_fixed(1.3) +
+  guides(fill=F)
+```
+
+### **7.**
+*Now color the map by the winning candidate for each state.*
+```{r, echo-F}
+state.winner$state <- tolower(state.winner$state)
+states <- states %>% rename(state = region)
+
+```
+
+
+  Now, perform left_join() on the region and print the new map
+```{r,echo=F}
+states.join <- left_join(states, state.winner)
+
+ggplot(data=states.join)+
+  geom_polygon(aes(x=long, y=lat, fill=candidate, group=group), color='white') +
+  coord_fixed(1.3) +
+  scale_fill_manual(values=c('orangered','steelblue')) + theme(legend.position='none')
+#added custom colors for aesthetic 
+```
+
+### **8.**
+*Color the map of the state of California by the winning candidate for each county. Note that some county have not finished counting the votes, and thus do not have a winner. Leave these counties uncolored. *
+```{r echo=F, message=FALSE}
+#Perform left_join
+county.winner$county <- tolower(county.winner$county)
+counties <- counties %>% rename(county = subregion)
+counts.join <- left_join(counties,county.winner)  
+
+
+#Get California data
+ca.counties <- filter(counts.join, region=='california')
+
+ggplot(data=ca.counties)+
+  geom_polygon(aes(x=long, y=lat, fill=candidate, group=group), color='white') +
+  coord_fixed(1.3) +
+  scale_fill_manual(values=c('orangered','steelblue')) + theme(legend.position='none')
+#added custom colors for aesthetic
+```
+  note: The data was behaving oddly when trying to generate this. If I filter ca.counties with state=='California', my map generated would be crazy, but there did exist missing regions. However, I figured this would be wrong because we are mapping on region(belong to the counties data), so I changed it to what is seen above. No missing values are present now. It might be a calculation I messed up on previously.
+  
+### **9. (Open-Ended)**
+*Create a visualization of your choice using census data.*
+```{r, echo=F}
+ggplot(data=counts.join)+
+  geom_polygon(aes(x=long, y=lat, fill=candidate, group=group), color='white') +
+  coord_fixed(1.3) +
+  scale_fill_manual(values=c('orangered','steelblue')) + theme(legend.position='none')
+```
+  This is a simple map of election results per county on a national scale. Some of the data is missing, and is represented by the color grey. Particularly, Louisiana has a lot of missing counties.
+
+
+### **10.**
+*The census data contains county-level census information. In this problem, we clean and aggregate the information.*
+```{r, echo=F}
+#Filter out rows with missing values
+census.clean <- census %>% na.omit()
+
+#Convert {Men, Employed, VotingAgeCitizen} attributes to percentages
+census.clean <- census.clean %>% 
+  mutate(Men = Men/TotalPop*100) %>%
+  mutate(Women=Women/TotalPop*100) %>%
+  mutate(Employed = 100-Unemployment) %>%
+  mutate(VotingAgeCitizen = (VotingAgeCitizen/TotalPop)*100)
+  
+#Compute Minority attribute
+census.clean <- census.clean %>%
+  mutate(Minority = Hispanic+Black+Native+Asian+Pacific)
+
+census.clean <- select(census.clean, -c('Hispanic','Black','Native','Asian','Pacific','IncomeErr','IncomePerCap','IncomePerCapErr','Walk','PublicWork','Construction'))
+
+#Print out first 5 rows
+census.clean[1:5,]
+
+```
+
+### **11.**
+*Run PCA for the cleaned county level census data (with State and County excluded).*
+
+```{r, echo=F}
+census.clean.id <- select(census.clean,-c(State,County))
+#Check if need to scale
+summary( census.clean.id )
+apply(census.clean.id, 2, var)
+```
+  Some percentages (such as Carpool, Transit, OtherTransp, WorkAtHome, etc) are much smaller on average compared to the averages of other percentage variables. There variances also differ significantly compared to each other. 
+  If we didn't scale the variables before running PCA, then the PCs would be driven with the variables with the greatest mean and variance.
+  Here's a list of the absolute values of the features for the First Component:
+```{r, echo=F}
+pr.out = prcomp(census.clean.id, scale=TRUE, center = TRUE)
+#First two PCs
+pcs.1_2 = pr.out$x[,1:2]
+#Three features w/ largest absolute values for PC1.
+pr.out$rotation[,1] %>% abs() %>% sort(decreasing=TRUE)
+#Which features have opposite signs
+```
+
+*What are the three features with the largest absolute values of the first principal component?*
+  Poverty, ChildPoverty, and Employed have the largest absolute values of PC1. They have the highest correlations with the first component.
+```{r, echo=F}
+#Which features have opposite signs
+pr.out$rotation[,1] %>% sort(decreasing=TRUE)
+```
+
+  
+  
+*Which features have opposite signs and what does that mean about the correlation between these features?*
+
+  The following features have opposite signs:
+  Transit
+  VotingAgeCitizen
+  PrivateWork
+  Men
+  FamilyWork
+  SelfEmployed
+  Professional
+  WorkAtHome
+  Income
+  White
+  Employed
+  
+  This means they are all negatively correlated with the first principal component
+### **12.**
+*Determine the minimum number of PCs needed to capture 90% of the variance for the analysis.*
+```{r, echo=FALSE}
+#Calculate PVE & Cumm PVE
+pve = (pr.out$sdev^2)/sum( (pr.out$sdev^2) )
+pve.cumm <- cumsum(pve)
+
+#Plot PVE
+plot(pve, xlab='PC', ylab='PVE', type='b', main='Proportion of Variance Explained(PVE) by each Principal Component(PC)')
+
+#Plot Cumm PVE
+plot(cumsum(pve), xlab='Principal Component', ylab='Cummulative PVE', ylim=c(0,1), type='b', main="Cummulative PVE by each Principal Component")
+abline(v=which(pve.cumm >=.9)[1], col='red', lwd=3, lty=1)
+
+```
+  From the plot of the Cumulative PVE, we notice that the minimum number of PC's needed to capture 90% of the variance is 13 from a maximum possibility of 24.
+
+```{r}
+census.clean.id
+```
+
+### **13.**
+```{r, echo=FALSE}
+#calculate the euclidean distance matrix
+cens.dist <- dist(census.clean.id)
+
+#Run hierarchical clustering using complete linkage
+cens.hclust <- hclust(cens.dist)
+
+#Plot the dendograms
+dend1 = as.dendrogram(cens.hclust)
+dend1 = color_branches(dend1, k=10, groupLabels = T)
+plot(dend1)
+```
+```{r}
+census.clustinfo <- census.clean
+census.clustinfo['cluster_10_norm'] <- cutree(cens.hclust, 10)
+
+```
+
+
+This is an obvious comment, but a dendrogram will just not be legible with this data. There's thousands of counties, meaning thousands of ends. If we want to better observe how the clustering algorithm performed, we should see how it performs by observing what counties are clustered together
+```{r}
+#Get ID of Santa Barbara County to for comparisons
+SB.id = census.clean %>% filter(County == 'Santa Barbara') %>% select(CountyId)
+SB.id=SB.id[[1,1]]
+SB.id
+```
+
+```{r}
+cens.hclust$dist.method
+```
+
+```{r}
+#Clustering with normal parameters, 2 CLUSTERS
+#Plot the dendograms
+dend2 = as.dendrogram(cens.hclust)
+dend2 = color_branches(dend2, k=2, groupLabels = T)
+plot(dend2)
+#Add new column to our copy of clustering info
+census.clustinfo['cluster_2_norm'] <- cutree(cens.hclust, 2)
+```
+
+```{r}
+#Rerun clustering, replacing original features with pc1 & pc2
+
+
+#calculate the euclidean distance matrix
+pcs.dist = dist(pcs.1_2)
+
+#Run hierarchical clustering using complete linkage
+pcs.hclust <- hclust(pcs.dist)
+
+#Plot the dendograms
+dend.pc.1 = as.dendrogram(pcs.hclust)
+dend.pc.1 = color_branches(dend.pc.1, k=10,groupLabels=T)
+plot(dend.pc.1)
+#Add new column to our copy of clustering info
+census.clustinfo['cluster_10_pc'] <- cutree(pcs.hclust, 10)
+```
+
+
+```{r}
+#Rerun clustering, replacing original features with pc1 & pc2 USING 2 clusters
+
+
+#Plot the dendograms
+dend.pc.2 = as.dendrogram(pcs.hclust)
+dend.pc.2 = color_branches(dend.pc.2, k=2,groupLabels=T)
+plot(dend.pc.2)
+#Add new column to our copy of clustering info
+census.clustinfo['cluster_2_pc'] <- cutree(pcs.hclust, 2)
+```
+
+_OBSERVATIONS_
+```{r}
+
+census.clustinfo[census.clustinfo$CountyId == '6083',]
+```
+```{r}
+#Second cluster, 10 total, normal parameters
+census.clustinfo[census.clustinfo$cluster_10_norm == '2',]
+```
+```{r}
+#first cluster, 2 total, normal parameters
+census.clustinfo[census.clustinfo$cluster_2_norm == '1',]
+```
+
+```{r}
+#Second cluster, normal parameters
+census.clustinfo[census.clustinfo$cluster_10_pc == '2',]
+```
+
+```{r}
+#First Cluster, normal parameters
+census.clustinfo[census.clustinfo$cluster_2_pc == '1',]
+```
+## **CLASSIFICATION**
+We are now working with supervised learning tasks. Our most important question will be:
+  Can we use census information in a county to predict the winner in that county?
+  
+  We first need to combine county.winner and census.clean. For simplicity, the following code is given/makes the chances to merge them into election.cl for classification.
+```{r}
+# we move all state and county names into lower-case
+tmpwinner <- county.winner %>% ungroup %>%
+  mutate_at(vars(state, county), tolower)
+
+# we move all state and county names into lower-case
+# we further remove suffixes of "county" and "parish"
+tmpcensus <- census.clean %>% mutate_at(vars(State, County), tolower) %>%
+  mutate(County = gsub(" county|  parish", "", County)) 
+
+# we join the two datasets
+election.cl <- tmpwinner %>%
+  left_join(tmpcensus, by = c("state"="State", "county"="County")) %>% 
+  na.omit
+
+# drop levels of county winners if you haven't done so in previous parts
+election.cl$candidate <- droplevels(election.cl$candidate)
+
+
+## save meta information
+election.meta <- election.cl %>% select(c(county, party, CountyId, state, votes, pct, total))
+
+## save predictors and class labels
+election.cl = election.cl %>% select(-c(county, party, CountyId, state, votes, pct, total))
+```
+
+### **14.**
+*Understand the code above. Why do we need to exclude the predictor party from election.cl? *
+  Essentially, Party and candidate are the same variables. The republican candidate is Donald Trump, the democrat candidate is Joe Biden. It'd have the greatest correlation and would render our other variables useless. We're not interested in the behavior between Party and candidate. We want to know what information about US counties best determined their choice of candidate.
+  
+  We'll now split election.cl into a training and test data-set.
+```{r}
+set.seed(10) 
+n <- nrow(election.cl)
+idx.tr <- sample.int(n, 0.8*n) 
+election.tr <- election.cl[idx.tr, ]
+election.te <- election.cl[-idx.tr, ]
+```
+
+  And we'll perform 10-fold Cross Validation.
+```{r}
+set.seed(20) 
+nfold <- 10
+folds <- sample(cut(1:nrow(election.tr), breaks=nfold, labels=FALSE))
+```
+
+  Later on, we'll also need the following error rate function. The object records will be used to record the performance of our different methods.
+```{r}
+calc_error_rate = function(predicted.value, true.value){
+  return(mean(true.value!=predicted.value))
+}
+records = matrix(NA, nrow=3, ncol=2)
+colnames(records) = c("train.error","test.error")
+rownames(records) = c("tree","logistic","lasso")
+```
+
+## **CLASSIFICATION**
+
+### **15.**
+*Decision tree: train a decision tree by `cv.tree()`*
+
+```{r, echo=FALSE, fig.cap="Decision Tree before pruning"}
+#Before Pruning
+elect.tree <- tree(candidate~., data=election.tr)
+draw.tree(elect.tree,nodeinfo=T,cex=.5,size=1.5)
+```
+  The Pre-pruned decision Tree splits the data at Transit first. We can calculate the error rate of the pre-pruned tree using the given code.
+```{r, echo=F}
+elect.tree.pred <- predict(elect.tree, election.te, type='class')
+paste("Test Error Rate:", calc_error_rate(elect.tree$y, election.te$candidate))
+
+elect.tree.train_pred <- predict(elect.tree, election.tr, type='class')
+paste("Train Error Rate:", calc_error_rate(elect.tree$y, election.tr$candidate))
+```
+  Currently, we have a 33.45% classifications rate. We'll try to reduce that by pruning the tree. The high test error rate is likely due to overfitting, since we're getting a train error rate of 0. Pruning the tree will help with our accuracy, and reduce overfitting. 
+  We first need to determine the best size of the tree.
+```{r}
+set.seed(20)
+cv = cv.tree(elect.tree, FUN=prune.misclass, rand=folds)
+best.cv = min(cv$size[cv$dev == min(cv$dev)])
+best.cv
+```
+
+  The tree with 7 terminal nodes generates the lower error rate, so we will use that for pruning
+```{r}
+elect.pt <- prune.misclass ( elect.tree, best=best.cv)
+
+draw.tree(elect.pt, cex=.7) +
+  title('Pruned Tree w/ size=7')
+```
+  From the Pruned Tree shown above (and the Pre-Pruned Tree beforehand), "Transit" is split first. This may seem odd, but it likely has to do with its correlation with TotalPop. Public transit is much more common in cities, and cities contribute to high population in a county. From the graph, it appears that cities with a greater percentage of white people tend to have voted for Donald Trump, whereas cities with a lesser percentage of white people, meaning a higher percentage of minorities, voted for Joe Biden. Donald Trump had greatest success in counties with a lower percentage of transit use and higher percentage of white people. This would be rural counties with smaller cities. Rural, white voters overwhelmingly voted for Donald Trump, as we've seen from our visualizations and here.
+  
+  
+Now we can predict on the test set and calculate our error rate and record them in our table
+```{r,echo=F}
+#predict on test/train sets
+elect.pt.predte = predict(elect.pt, election.te, type='class')
+elect.pt.predtr = predict(elect.pt, election.tr, type='class')
+#calculate test/train error rate
+tree.err.te <- calc_error_rate(elect.pt.predte, election.te$candidate)
+tree.err.tr <- calc_error_rate(elect.pt.predtr, election.tr$candidate)
+
+records[1,1] <- tree.err.tr
+records[1,2] <- tree.err.te
+records
+```
+We generate a training error rate of ~9% and a test error rate of ~13% through decision tree classification. This is a fairly good number, but we may yield better results through either the logistic or lasso methods.
+
+### **16.**
+*Let's run a logistic regression to predict the winning candidate in each county.*
+_"Well I believe I'll vote for a third party candidate!"_
+_"Go ahead, throw your vote away! Ahahaha!"_
+While the United States is not de jure a two party system, it is in practice. Fortunately, this allows us to create a logistic regression classification model. 
+
+```{r}
+elect.glm <- glm(candidate~.,data=election.tr, family=binomial)
+summary(elect.glm)
+```
+  Professional, VotingAgeCitizen and Service appear to have the greatest positive impact on the response. White, Drive, Carpool, and FamilyWork had the greatest negative impact. Our decision Tree had roughly the same variables as our logistic model.
+  Before we can make predictions, we need to calculate the best threshold value to use. The "best" value would be the minimum euclidean distance from (FPR, FNR) to (0,0). Basically, we want the value that yields the lower FPR and FNR.
+
+```{r message=FALSE, warning=FALSE, echo=F}
+#predict on train
+elect.glm.predtr <- predict(elect.glm,election.tr,type='response')
+pred = prediction(elect.glm.predtr,election.tr$candidate)
+
+#Calculate FPR, Cutoff and FNR
+fpr = performance(pred,'fpr')@y.values[[1]]
+cutoff = performance(pred,'fpr')@x.values[[1]]
+fnr = performance(pred,'fnr')@y.values[[1]]
+
+matplot(cutoff,cbind(fpr,fnr), type='l',lwd=2,xlab='Threshold',ylab='Error Rate')
+legend(0.3,1,legend=c("False Positive Rate","False Negative Rate"), col=c(1,2),lty=c(1,2))
+```
+ Above is the FPR and FNR versus Threshold values, giving us a rough idea on what we can expect the threshold to be.
+
+```{r}
+rate = as.data.frame(cbind(Cutoff=cutoff,FPR=fpr,FNR=fnr))
+rate$distance = sqrt((rate[,2]^2+rate[,3]^2))
+threshold = rate$Cutoff[which.min(rate$distance)]
+
+filter(rate, distance==min(distance))
+```
+  With a Cutoff of .2778, we generate the smallest Euclidean distance. This will be our threshold. Now we can compute the error rates and record them.
+```{r message=FALSE, warning=FALSE,echo=FALSE}
+set.seed(20)
+
+#make predictions
+glm.pred.tr <- predict(elect.glm, election.tr,type='response')
+glm.pred.te <- predict(elect.glm, election.te, type='response')
+
+#convert predictions to classes
+glm.pred.tr.class <- ifelse(glm.pred.tr>threshold,"Joe Biden", "Donald Trump")
+glm.pred.te.class <- ifelse(glm.pred.te>threshold,"Joe Biden", "Donald Trump")
+
+#Input into Records
+records[2,1] <- calc_error_rate(glm.pred.tr.class, election.tr$candidate)
+records[2,2] <- calc_error_rate(glm.pred.te.class, election.te$candidate)
+
+records
+```
+  
+Compared to the Tree Model, the training error rate is relative the same at 8%, but the test error rate is only 9.5%, a significant improvement.
+
+Finally, we should compare these results to a lasso model.
+
+**17.**
+*You may notice that you get a warning `glm.fit: fitted probabilities numerically 0 or 1 occurred` This is usually a sign that we are overfitting. One way to control overfitting in logistic regression is through regularization.*
+
+We'll use the cv.glmnet function to perform a 10-fold cross validation and choose the best regularization parameter for the logistic regression with the LASSO penalty. 
+```{r}
+x <- as.matrix( select(election.tr, -candidate) )
+y <- election.tr$candidate
+set.seed(10)
+
+cv.out = cv.glmnet(x, y, alpha=1, lambda=seq(1,50)*1e-4, family=binomial)
+
+bestlam = cv.out$lambda.min
+bestlam
+```
+  So, the optimal value of lambda is roughly 0.0013. Now, we should check and see which coefficients are non-zero for the full dataset
+```{r}
+out = glmnet(x,y, alpha=0, family=binomial)
+
+coefficients <- predict(out, type='coefficients', s=bestlam)
+coefficients
+```
+  
+  In the Lasso model, FamilyWork is the strongest coefficient, followed by OtherTransp, Transit, Professional, and Service. These all fall in line with what we've observed from our past models
+  Finally, we need to compute the test and train error rates.  
+
+```{r message=FALSE, warning=FALSE}
+x.tr <- as.matrix(select(election.tr,-candidate))
+y.tr <- as.matrix(select(election.tr,candidate))
+y.tr <-ifelse(y.tr=="Joe Biden", 1,0)
+
+#Lasso model, with best lambda
+elect.lasso <- glmnet(x.tr, y.tr, alpha=1, lambda=bestlam, family=binomial)
+#
+
+#predict on train
+lasso.tr <- predict(elect.lasso, newx=x.tr, type='response')
+lasso.tr.class <- ifelse(lasso.tr >0.5, "Joe Biden", "Donald Trump")
+
+#Predict on Test
+x.te <- as.matrix(select(election.te, - candidate))
+y.te <- as.matrix(select(election.te, candidate))
+y.te <- ifelse(y.te == "Joe Biden", 1,0)
+lasso.te <- predict(elect.lasso, newx = x.te, type='response')
+lasso.te.class <- ifelse(lasso.te >0.5, "Joe Biden", "Donald Trump")
+
+#Test/Train Error Rates
+lasso.tr.err <- calc_error_rate(lasso.tr.class,election.tr$candidate)
+lasso.te.err <- calc_error_rate(lasso.te.class, election.te$candidate)
+
+paste("Lasso Model - Train Error Rate: ",lasso.tr.err)
+paste("Lasso Model - Test Error Rate: ",lasso.te.err)
+
+records[3,1] <- lasso.te.err
+records[3,2] <- lasso.tr.err
+
+# # TEST CODE FOR LATER 
+# #pred = prediction(lasso.predtr,s=bestlam,type='response')
+# 
+# lasso.pred.train = predict(elect.lasso, s=bestlam, newx = x,family='binomial',type='response')
+```
+
+We get a test error rate of 8.6% for our lasso model. That's pretty good! Let's now check out our error rates for all of our models, now.
+```{r}
+records
+```
+
+
+**18.**
+*Compute ROC curves for the decision tree, logistic regression and LASSO logistic regression using predictions on the test data.*
+
+
+```{r}
+#Perform Predictions on testing data for each model
+pred.tree <- prediction(as.numeric(elect.pt.predte), as.numeric(election.te$candidate))
+pred.log <- prediction(as.numeric(glm.pred.te), as.numeric(election.te$candidate))
+pred.lasso <- prediction(as.numeric(lasso.te), as.numeric(election.te$candidate))
+#Compute Performances for each model
+perf.tree <- performance(pred.tree, measure = 'tpr', x.measure = 'fpr')
+perf.log <- performance(pred.log, measure='tpr', x.measure='fpr')
+perf.lasso <- performance(pred.lasso, measure='tpr', x.measure='fpr')
+
+#Plot ROC curves for each model
+
+plot(perf.tree, col=2, lwd=3, main="ROC Curves")
+plot(perf.log, add=TRUE, col=3, lwd=3)
+plot(perf.lasso,add=TRUE,col=4,lwd=3)
+abline(0,1)
+legend('bottomright',legend=c("Dec Tree","Log Reg", "Lasso"), col=c(2,3,4), lty=3)
+```
+  
+## Taking it Further
+
+### **19.**
+*Explore additional classification methods.*
+
+Let's take a dive into Random Forests and see how it compares with our other methods.
+
+```{r}
+mtry = tuneRF(election.cl[,-1], election.cl$candidate)
+elect.rf <- randomForest(candidate~.,data=election.tr,importance=TRUE,mtry = mtry )
+
+
+elect.rf
+```
+
+```{r}
+importance(elect.rf)
+```
+
+  
+   In random forest classification, generally, the number of variables randomly sampled at each split is the square root of the number of parameters. We use the tuneRF function to ensure that this holds true in this case. We can see that 1 variable was considered at each split for the lowest OOB error rate. This has to do with the mtry tuning.
+  We can see that Transit was most important in terms of Model Accuracy(MeanDecreaseAccuracy), followed by Minority, White and TotalPop. Transit also was most important in terms of Gini Index (MeanDecreaseGini), again followed by Minority, White and TotalPop. It's worth noting that there exists a correlation between White and Minority due to the nature of their percentage values.
+  This is similar to what we've observed in other models, especially in the logistic model which valued Transit, White, and TotalPop. [LIST OTHER MODELS]
+
+  
+
+  
+  
+  Let's make a boosted model as well. For a boosted model, we will set Joe Biden to be 1, and Donald Trump to be 0. We'll want 1000 bagged trees and set the interaction depth to be just 2. We'll leave the shrinkage parameter to its default of 0.001.
+```{r}
+set.seed(27)
+elect.boost <- gbm(ifelse(candidate=="Joe Biden", 1,0)~.,data=election.tr,
+                   distribution='bernoulli',n.trees=1000,interaction.depth=2)
+summary(elect.boost)
+```
+  Running the summary on the created model, we see that White is the most important variable in the model, followed by Income, Drive, and FamilyWork respectively. We can create a plot to visualize what the variables White and Income are doing to the response.
+```{r}
+par(mfrow=c(1,2))
+plot(elect.boost,i='White',type='response')
+plot(elect.boost, i='Income', type='response')
+```
+  Remember, we set Donald Trump's value to be 0. It appears that the greater the percentage of White people make up a county, the county is more favorable in voting for Donald Trump. 
+  As for income, counties appear to be more likely to vote for Joe Biden when average income is around 60k, 70k 80k. This is roughly middle, to upper-middle, class families.
+  I want to note that the y-value observed in Income is extremely small, and I believe that has to do with the disproportional amount of favored-trumps that make up the Train data set. 
+  
+FINISH
+```{r}
+#Train Error Rate
+rf.pred.tr <- predict(elect.rf, newdata = election.tr)
+calc_error_rate(rf.pred.tr,election.tr$candidate)
+
+#Test Error Rate
+rf.pred.te <- predict(elect.rf, newdate=election.cl)
+calc_error_rate(rf.pred.te,election.te$candidate)
+```
+
+**20.**
+## **REGRESSION**
+With supervised classification done, we now move on to another task. The goal will be:
+  Can census information be used to predict the number of votes each candidate received per county?
+  
+  
+```{r}
+# we move all state and county names into lower-case
+tmpvotes <- election.raw %>% ungroup %>%
+  mutate_at(vars(state, county), tolower)
+
+# we move all state and county names into lower-case
+# we further remove suffixes of "county" and "parish"
+tmpcensus <- census.clean %>% mutate_at(vars(State, County), tolower) %>%
+  mutate(County = gsub(" county|  parish", "", County))
+
+# we join the two datasets
+election.reg <- tmpvotes %>%
+  left_join(tmpcensus, by = c("state"="State", "county"="County")) %>%
+  na.omit
+
+# ## save meta information
+# election.meta <- election.cl %>% select(c(county, party, CountyId, state, votes, pct, total))
+
+#Remove all observations of candidates that are not Joe Biden or Donald Trump
+election.reg <- election.reg %>% filter(candidate==c('Joe Biden', 'Donald Trump'))
+
+#Create dummy variables for if the observation is Joe Biden or Donald Trump
+election.reg$biden <- ifelse(election.reg$candidate=='Joe Biden', 1,0)
+election.reg$trump <- ifelse(election.reg$candidate=='Donald Trump', 1,0)
+
+
+## save predictors and class labels
+election.reg = election.reg %>% select(-c(party))
+
+#Remove all values where votes ==0
+election.reg <- election.reg[election.reg$votes!=0,]
+```
+
+If we run our models as is, we are likely not going to get great results. As noted previously, Joe Biden and Donald Trump are the two candidates that obtained the vast majority of votes in the 2020 election. As such, our model should only focus on the vote totals of these candidates. Additionally, the candidates predictor is a nominal categorical variable. We need to mutate this variable into something numeric. So we use dummy variables to mutate the candidate variable into two variables that represent the characteristic. We NEED additional information for a regression model to work correctly. Not having a candidates variable will have each observation be identitcal in every value besides votes, which will likely lead to the same value being assigned twice per candidate for county observations.
+
+
+**REGRESSION MODELLING**
+#Records Table (For later use)
+```{r}
+reg.records = matrix(NA, nrow=2, ncol=2)
+colnames(reg.records) = c("train.MSE","test.MSE")
+rownames(reg.records) = c("lasso","ridge")
+```
+
+```{r}
+n <- nrow(election.reg)
+idx.tr <- sample.int(n, 0.8*n)
+election.tr <- election.reg[idx.tr,]
+election.te <- election.reg[-idx.tr,]
+```
+
+LASSO MODELLING:
+
+```{r}
+#Perform Cross Validation for hyperparameter tuning
+#DO NOT LEAVE CANDIDATE FOR x, this will result in the matrix containing data of type 'character', not 'numeric' as desired
+x <- as.matrix( select(election.tr, -c(county, votes, CountyId,candidate, state)) )
+y <- election.tr$votes
+
+set.seed(10)
+
+cv.out = cv.glmnet(x, y, alpha=1, lambda=seq(1,50)*1e-4)
+
+bestlam = cv.out$lambda.min
+```
+
+```{r}
+#Get train data
+x.tr <- as.matrix(select(election.tr,-c(county, votes,CountyId,candidate, state)))
+y.tr <- as.matrix(select(election.tr,votes))
+
+#Lasso model, with best lambda
+elect.lasso <- glmnet(x.tr, y.tr, alpha=1, lambda=bestlam)
+
+#predict on train
+lasso.pred.tr <- predict(elect.lasso, s= bestlam, newx=x.tr)
+
+
+#Test Data w/ Predict on Test
+x.te <- as.matrix(select(election.te, -c(county, votes,CountyId,candidate, state)))
+y.te <- as.matrix(select(election.te, votes))
+lasso.pred.te <- predict(elect.lasso,  s= bestlam, newx=x.te)
+
+```
+
+```{r}
+#Get Lasso Coefficients
+predict(elect.lasso,type='coefficients',s=bestlam)
+```
+It appears that there is a negative relationship between 'biden', "Minority", "Transit", and "White" with vote totals. This is somewhat expected, as most counties favored Donald Trump, though "White" does pique my interest.
+```{r}
+mean(election.cl$candidate=='Donald Trump')
+```
+80% of the observations favored Donald Trump. Most of these counties had lower populations 
+
+This has me interested for further analysis when I have the chance to revisit it.
+```{r}
+#Train MSE
+paste("Train MSE: ", round(mean((lasso.pred.tr-y.tr)^2,4)) )
+reg.records[1,1] = round(mean((lasso.pred.tr-y.tr)^2,4))
+paste("Test MSE: ",  round(mean((lasso.pred.te-y.te)^2,4)) )
+reg.records[1,2] = round(mean((lasso.pred.te-y.te)^2,4))
+```
+#RIDGE REGRESSION
+
+```{r}
+cor(x)
+```
+Obviously there are strong multicollinearities between several predictors (White and Minority, Men and Women, Poverty and ChildPoverty, Biden and Trump) . Perhaps a ridge regression model may eleviate this.
+```{r}
+#10-fold cv
+lambda.list.ridge = 1000 * exp(seq(0,log(1e-5), length = 100))
+ridge.cv = cv.glmnet(x.tr, y.tr, alpha=0, lambda=lambda.list.ridge)
+#Get best lambda
+bestlam = ridge.cv$lambda.min
+
+#Ridge-Regression Model fitted to our training set
+
+elect.ridge = glmnet(x.tr,y.tr, alpha=0,lambda=bestlam)
+
+predict(elect.ridge,type='coefficients',s=bestlam)
+```
+With our ridge model, it appears that PrivateWork and Men percentages have the greatest impact on the number of votes, followed by Women, Product, and Drive predictors.
+```{r}
+#Ridge - Train MSE
+ridge.pred.tr = predict(elect.ridge, s=bestlam, newx=x.tr)
+paste("Train MSE: ", round(mean((ridge.pred.tr-y.tr)^2),4) )
+
+reg.records[2,1] = round(mean((ridge.pred.tr-y.tr)^2),4)
+#Ridge - Test MSE
+ridge.pred.te = predict(elect.ridge, s=bestlam, newx=x.te)
+paste("Test MSE: ", round(mean((ridge.pred.te-y.te  )^2),4) ) 
+
+reg.records[2,2] = round(mean((ridge.pred.te-y.te)^2),4)
+```
+
+```{r}
+reg.records
+```
+
+It doesn't seem like the ridge model faired better than our lasso approach. Let's stick with the lasso model to see how well it did in it's total predictions.
+```{r}
+#create a single vector of lasso predictions
+lasso.pred <- c(lasso.pred.tr,lasso.pred.te)
+typeof(lasso.pred)
+```
+
+```{r}
+#remerge the train and test datasets, assign a column of predicted votes for our lasso predictions
+election.reg <- rbind(election.tr,election.te)
+election.reg['votes_pred'] <- lasso.pred
+election.reg
+
+#Similar to the initial analysis, create dataframes of predicted county and state values
+election.reg.county <- election.reg
+election.reg.state <- election.reg %>% group_by(state,candidate) %>% summarise(votes_pred=sum(votes_pred))
+
+```
+
+
+```{r}
+#county.winner (predicted)
+pred.county.winner <- election.reg.county %>% 
+  group_by(county) %>% 
+  mutate(total=sum(votes_pred)) %>%
+  mutate(pct=votes_pred/total) %>%
+  top_n(n=1, wt=pct)
+pred.county.winner
+
+#state.winner (predicted)
+pred.state.winner <- election.reg.state %>%
+  group_by(state) %>%
+  mutate(total=sum(votes_pred)) %>%
+  mutate(pct=votes_pred/total) %>%
+  top_n(n=1, wt=pct)
+pred.state.winner
+```
+
+```{r}
+#Predicted Results
+states.join <- left_join(states, pred.state.winner)
+
+ggplot(data=states.join)+
+  geom_polygon(aes(x=long, y=lat, fill=candidate, group=group), color='white') +
+  coord_fixed(1.3) +
+  scale_fill_manual(values=c('orangered','steelblue')) + theme(legend.position='none')
+#added custom colors for aesthetic 
+```
+[DISCUSS]
+So, it doesn't seem like the Lasso model did too well in accurately predicting election results. Each statewide election was fairly close but Joe Biden was the winner in each state, besides Rhode Island. Some values predicted are also running negative. My knowledge has run its limit, and at this time I am not aware on how to adjust my model to achieve better results. I will look into this in time. For now, I will use the knowledge I have in regression analysis to make my own model.
+
+Regression Analysis
+
+```{r}
+election.reg <- na.omit(election.reg)
+x1 <- election.reg$TotalPop
+x2 <- election.reg$Men
+x3 <- election.reg$Women
+x4 <- election.reg$White
+x5 <- election.reg$Minority
+x6 <- election.reg$Poverty
+x7 <- election.reg$ChildPoverty
+x8 <- election.reg$biden
+x9 <- election.reg$trump
+x10 <- election.reg$Employed
+x11 <- election.reg$Unemployment
+x12 <- election.reg$VotingAgeCitizen
+x13 <- election.reg$Income
+x14 <- election.reg$Professional
+x15 <- election.reg$Service
+x16 <- election.reg$Office
+x17 <- election.reg$Production
+x18 <- election.reg$Drive
+x19 <- election.reg$Carpool
+x20 <- election.reg$Transit
+x21 <- election.reg$OtherTransp
+x22 <- election.reg$WorkAtHome
+x23 <- election.reg$MeanCommute
+x24 <- election.reg$PrivateWork
+x25 <- election.reg$SelfEmployed
+x26 <- election.reg$FamilyWork
+x27 <- election.reg$biden
+x28 <- election.reg$trump
+y <- election.reg$votes
+
+#Obtain a model using stepwise regression
+
+mod.0 = lm(y~1)
+mod.U=lm(y~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+x11+x12+x13+x14+x15+x16+x17+x18+x19+x20+x21+x22+x23+x24+x25+x26+x27+x28)
+
+s.lm <- step(mod.0, scope = list(lower=mod.0, upper=mod.U))
+```
+
+```{r}
+summary(s.lm)
+```
+Stewpwise regression found x1,x20,x14,x24,x16,x15,x23,x22 to be the best predictors for vote totals. These predictors, respectively, are:
+
+TotalPop - This should be expected, as there is a correlation between Totalpop and votes
+Transit - Similar to what we found in past models
+Professional
+PrivateWork
+Office
+Service
+MeanCommute
+WorkAtHome
+SelfEmployed
+
+83% of the variance is explained with the model. We do have a wide range of residuals which may be an issue. Furthermore, biden and trump predictors were not found to be statistically signifigant, which may cause trouble down the line with predictions. 
+```{r}
+library(leaps)
+#Use best subsets regression and compare subsets with Mallow's Cp and adjusted R-squared, Compare with stepwise
+
+mod = regsubsets(cbind(x1,x2,x3,x4,x5,x6,x7,x8,x9,x10,x11,x12,x13,x14,x15,x16,x17,x18,x19,x20,x21,x22,x23,x24,x25,x26), y, nvmax = 26)
+summary.mod <- summary(mod)
+summary.mod$which
+summary.mod$cp
+summary.mod$adjr2
+```
+```{r}
+plot(summary.mod$bic,xlab='parameter',ylab='BIC')
+```
+```{r}
+plot(summary.mod$cp,xlab='parameter',ylab='Mallows Cp')
+```
+```{r}
+plot(summary.mod$adjr2,xlab='parameter',ylab='Mallows Cp')
+```
+
+We want to favor a subset model with relatively low Cp/BIC valuess and relatively high aRSS. We can gather that the subset of 9 variables, the best of the 9-predictors models, is a good choice, these variables are also the same as found in the stepwise regression model, confirming results.
+
+Now we have a rough idea on what the model should look like.
+```{r}
+reg.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25)
+```
+
+Let's now check on the correlations between these variables
+```{r}
+#Better Identify variables
+votes <- election.reg$votes
+TotalPop <- x1
+Transit <- x20
+Professional <- x14
+PrivateWork <- x24
+Office <- x16
+Service <- x15
+MeanCommute <- x23
+WorkAtHome <- x22
+SelfEmployed <- x25
+
+#Scatterplot matrix
+pairs(~votes+TotalPop+Professional+Service+Office+Transit+WorkAtHome+MeanCommute+PrivateWork+SelfEmployed)
+
+
+```
+```{r}
+#Correlation Matrix
+subset.reg <- data.frame(votes,TotalPop,Professional,Service,Office,Transit,WorkAtHome,MeanCommute,PrivateWork,SelfEmployed)
+cor(subset.reg)
+
+```
+We can see Total Pop has a strong correlation with votes. Most other correlations are fairly weak. 
+There's a fair positive correlation between WorkAthome and SelfEmployed, and a fair negative correlation between SelfEmployed and PrivateWork. F-tests can be run to see if interaction terms between these two pairs would be beneficial to the model.
+
+```{r}
+#(Reference) Initial model
+#reg.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25)
+
+#Model for interaction between WorkAtHome and SelfEmployed
+reg.interact.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25+I(x22*x25))
+
+#General Linear F-test
+anova(reg.1,reg.interact.1)
+
+
+#Model for interaction between WorkAtHome and SelfEmployed
+reg.interact.2 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25+I(x24*x25))
+
+#General Linear F-test
+anova(reg.1,reg.interact.2)
+```
+For the WorkAtHome*SelfEmployed interactionWe use our initial model, reg.1 as a null hypothesis, with our interaction model as the alternative. We obtain an F-statistic of 2.2974 with a p-value of .1293. So we fail to reject the null hypothesis. 
+
+Now we check the interaction term between SelfEmployed and PrivateWork, and obtain an F-statistic of 1.3428 with a resulting p-value of .2476. Again, the null hypothesis isn't rejected.
+
+Finally we should see if high order terms should be included in the model
+```{r}
+#Testing Second Order terms
+
+#(Reference) Initial model
+#reg.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25)
+
+#TotalPop, second order
+x1_2 <- x1**2
+summary(lm(y~x1+x1_2))
+
+#Professional, second order
+x14_2 <- x14**2
+summary(lm(y~x14+x14_2))
+
+#Service, second order
+x15_2 <- x15**2
+summary(lm(y~x15+x15_2))
+
+#Office, second order
+x16_2 <- x16**2
+summary(lm(y~x16+x16_2))
+
+#Transit, second order
+x20_2 <- x20**2
+summary(lm(y~x20+x20_2))
+
+#WorkAtHome, second order
+x22_2 <- x22**2
+summary(lm(y~x22+x22_2))
+
+#MeanCommute, second order
+x23_2 <- x23**2
+summary(lm(y~x23+x23_2))
+
+#PrivateWork, second order
+x24_2 <- x24**2
+summary(lm(y~x24+x24_2))
+
+#SelfEmployed, second order
+x25_2 <- x25**2
+summary(lm(y~x25+x25_2))
+```
+All second order terms besides x16, Office, seem to need further testing. We put all signfigant second order terms into a new model and anova test to see if we should use the new model, labeled reg.2, or our initial model without second order terms, reg.1.
+
+```{r}
+
+reg.2 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25+x1_2+x14_2+x15_2+x20_2+x22_2+x23_2+x24_2+x25_2)
+anova(reg.1,reg.2)
+
+
+```
+The p-val generated from the test is less than 0.05, so the Null Hypothesis is rejected, we use our new model.
+
+No we do further testing for signifigant third order terms.
+```{r}
+##Testing third Order terms
+
+#(Reference) Initial model
+#reg.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25)
+
+#TotalPop, third order
+x1_3 <- x1**3
+summary(lm(y~x1+x1_2+x1_3))
+
+#Professional, third order
+x14_3 <- x14**3
+summary(lm(y~x14+x14_2+x14_3))
+
+#Service, third order
+x15_3 <- x15**3
+summary(lm(y~x15+x15_2+x15_3))
+
+
+
+#Transit, third order
+x20_3 <- x20**3
+summary(lm(y~x20+x20_2+x20_3))
+
+#WorkAtHome, third order
+x22_3 <- x22**3
+summary(lm(y~x22+x22_2+x22_3))
+
+#MeanCommute, third order
+x23_3 <- x23**3
+summary(lm(y~x23+x23_2+x23_3))
+
+#PrivateWork, third order
+x24_3 <- x24**3
+summary(lm(y~x24+x24_2+x24_3))
+
+#SelfEmployed, third order
+x25_3 <- x25**3
+summary(lm(y~x25+x25_2+x25_3))
+```
+Third order interactions for MeanCommute and SelfEmployed don't seem to be signfigant. Once we use an anova test to interpret model improvement.
+```{r}
+reg.3 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25+
+              x1_2+x14_2+x15_2+x20_2+x22_2+x23_2+x24_2+x25_2+
+              x1_3+x14_3+x15_3+x20_3+x22_3+x24_3)
+anova(reg.2,reg.3)
+```
+```{r}
+##Testing fourth Order terms
+
+#(Reference) Initial model
+#reg.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25)
+
+#TotalPop, fourth order
+x1_4 <- x1**4
+summary(lm(y~x1+x1_2+x1_3+x1_4))
+
+#Professional, fourth order
+x14_4 <- x14**4
+summary(lm(y~x14+x14_2+x14_3+x14_4))
+
+#Service, fourth order
+x15_4 <- x15**4
+summary(lm(y~x15+x15_2+x15_3+x15_4))
+
+#Transit, fourth order
+x20_4 <- x20**4
+summary(lm(y~x20+x20_2+x20_3+x20_4))
+
+#WorkAtHome, fourth order
+x22_4 <- x22**4
+summary(lm(y~x22+x22_2+x22_3+x22_4))
+
+#PrivateWork, fourth order
+x24_4 <- x24**4
+summary(lm(y~x24+x24_2+x24_3+x24_4))
+
+```
+Fourth Order Terms for TotalPop and Service (x1 & x15) are not signifigant. We once again run an anova test.
+```{r}
+reg.4 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25+
+              x1_2+x14_2+x15_2+x20_2+x22_2+x23_2+x24_2+x25_2+
+              x1_3+x14_3+x15_3+x20_3+x22_3+x24_3+
+              x14_4+x20_4+x22_4+x24_4)
+anova(reg.3,reg.4)
+```
+
+```{r}
+##Testing fifth Order terms
+
+#(Reference) Initial model
+#reg.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25)
+
+
+
+#Professional, fifth order
+x14_5 <- x14**5
+summary(lm(y~x14+x14_2+x14_3+x14_4+x14_5))
+
+#Transit, fifth order
+x20_5 <- x20**5
+summary(lm(y~x20+x20_2+x20_3+x20_4+x20_5))
+
+#WorkAtHome, fifth order
+x22_5 <- x22**5
+summary(lm(y~x22+x22_2+x22_3+x22_4+x22_5))
+
+#PrivateWork, fifth order
+x24_5 <- x24**5
+summary(lm(y~x24+x24_2+x24_3+x24_4+x24_5))
+```
+Fifth order terms for Professional, WorkAtHome, and PrivateWork are not signifigant. 
+```{r}
+reg.5 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25+
+              x1_2+x14_2+x15_2+x20_2+x22_2+x23_2+x24_2+x25_2+
+              x1_3+x14_3+x15_3+x20_3+x22_3+x24_3+
+              x14_4+x20_4+x22_4+x24_4+
+              x20_5)
+anova(reg.4,reg.5)
+```
+Adding x20_5 to the model is a statistically signfigiant improvement, we continue adding higher order terms for x_20
+```{r}
+##Testing sixth Order terms
+
+#(Reference) Initial model
+#reg.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25)
+
+#Transit, sixth order
+x20_6 <- x20**6
+summary(lm(y~x20+x20_2+x20_3+x20_4+x20_5+x20_6))
+
+
+```
+```{r}
+reg.6 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25+
+              x1_2+x14_2+x15_2+x20_2+x22_2+x23_2+x24_2+x25_2+
+              x1_3+x14_3+x15_3+x20_3+x22_3+x24_3+
+              x14_4+x20_4+x22_4+x24_4+
+              x20_5+
+              x20_6)
+anova(reg.5,reg.6)
+```
+```{r}
+##Testing seventh Order terms
+
+#(Reference) Initial model
+#reg.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25)
+
+#Transit, sixth order
+x20_7 <- x20**7
+summary(lm(y~x20+x20_2+x20_3+x20_4+x20_5+x20_6+x20_7))
+```
+```{r}
+reg.7 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25+
+              x1_2+x14_2+x15_2+x20_2+x22_2+x23_2+x24_2+x25_2+
+              x1_3+x14_3+x15_3+x20_3+x22_3+x24_3+
+              x14_4+x20_4+x22_4+x24_4+
+              x20_5+
+              x20_6+
+              x20_7)
+anova(reg.6,reg.7)
+```
+```{r}
+##Testing eigth Order terms
+
+#(Reference) Initial model
+#reg.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25)
+
+#Transit, eigth order
+x20_8 <- x20**8
+summary(lm(y~x20+x20_2+x20_3+x20_4+x20_5+x20_6+x20_7+x20_8))
+```
+```{r}
+reg.8 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25+
+              x1_2+x14_2+x15_2+x20_2+x22_2+x23_2+x24_2+x25_2+
+              x1_3+x14_3+x15_3+x20_3+x22_3+x24_3+
+              x14_4+x20_4+x22_4+x24_4+
+              x20_5+
+              x20_6+
+              x20_7+
+              x20_8)
+anova(reg.7,reg.8)
+```
+```{r}
+##Testing ninth Order terms
+
+#(Reference) Initial model
+#reg.1 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25)
+
+#Transit, ninth order
+x20_9 <- x20**9
+summary(lm(y~x20+x20_2+x20_3+x20_4+x20_5+x20_6+x20_7+x20_8+x20_9))
+```
+```{r}
+reg.9 <- lm(y~x1+x20+x14+x24+x16+x15+x23+x22+x25+
+              x1_2+x14_2+x15_2+x20_2+x22_2+x23_2+x24_2+x25_2+
+              x1_3+x14_3+x15_3+x20_3+x22_3+x24_3+
+              x14_4+x20_4+x22_4+x24_4+
+              x20_5+
+              x20_6+
+              x20_7+
+              x20_8+
+              x20_9)
+anova(reg.8,reg.9)
+
+```
+We finally fail to reject the null hypothesis using anova testing, and thus have a final model.
+```{r}
+reg.full <- reg.8
+```
+
+Residual Analysis is the last step to take.
+
+
+ 
+```{r}
+#Get residuals and fitted values, create residuals v. fit plot
+res <- resid(reg.full)
+fit <- fitted(reg.full)
+
+plot(x=fit,y=res, xlab='fitted values', ylab='residual values', main='Residual V. Fit Plot')+
+  abline(h=0,col='red')
+```
+There is a clear nonconstant variances with our residuals, along with noticable outliers. We have a fanning effect, with our residuals being close to 0 for small x-values, but increasing with larger ones.
+```{r}
+#qqnorm Plot
+qqnorm(res)
+qqline(res,col='blue')
+```
+The qqnorm plot indicates our residuals are not normally distributed. There's also clear outliers in the data that's likely affected the model.
+Let's create a box-cox error plot to validate these claims. If our estimated value of lambda has 1 within it's 95% confidence interval, then we may assume normality. If not, we'll need to transform the data in some way to fix this.
+
+```{r}
+library(MASS)
+bcox <- boxcox(reg.full)
+bcox
+```
+We can also use a shapiro-wilks test. In the shapiro-wilks test, we assume for the null hypothesis that residuals are normally distributed. We obtain a p-value less than 0.05, thus rejecting the null hypothesis. The residuals are clearly not normally distributed.
+```{r}
+shapiro.test(res)
+```
+So it is true, our residuals are not normally distributed and as such LINE conditions are not met. We'll need to transform our response in some way to fulfill LINE conditions. Since 0 doesn't fall into the 95% confidence interval for the boxcox transform, we'll take the value of lambda we have and use a boxcox transformation on the votes parameter
+```{r}
+lambda <- bcox$x[which.max(bcox$y)]
+lambda
+```
+```{r}
+reg.transform <- lm(y**lambda~x1+x20+x14+x24+x16+x15+x23+x22+x25+
+              x1_2+x14_2+x15_2+x20_2+x22_2+x23_2+x24_2+x25_2+
+              x1_3+x14_3+x15_3+x20_3+x22_3+x24_3+
+              x14_4+x20_4+x22_4+x24_4+
+              x20_5+
+              x20_6+
+              x20_7+
+              x20_8)
+```
+
+```{r}
+#New residual v. fit plot
+res <- resid(reg.transform)
+fit <- fitted(reg.transform)
+
+plot(x=fit,y=res, xlab='fitted values', ylab='residual values', main='Residual V. Fit Plot')+
+  abline(h=0,col='blue')
+```
+The residuals seem to be much more constant than before, but we still have a cone shape. 
+```{r}
+#qqnorm Plot
+qqnorm(res)
+qqline(res,col='blue')
+```
+Our data appears much more normally distributed, but there's still an apperent left skew.
+
+```{r}
+shapiro.test(res)
+```
+The shapiro wilks test still rejects the null hyothesis. At this point, my knowledge on the subject has ran its course. There's a case to consider outliers and high leverage data, there are noticable outliers and possible high leverage data that we can observe from our plots and would likely find in further analysis. However, there is no reason to assume the given data is incorrect, and so they should not be excluded from the data. 
+
+I'm going to check the models predictions and see how it performed.
+```{r}
+#Get our regression data, minus votes
+election.reg.data <- data.frame(TotalPop,Professional,Service,Office,Transit,WorkAtHome,MeanCommute,PrivateWork,SelfEmployed)
+#predict the data and add as a column to our original data frame.
+reg.pred <- predict(reg.transform,election.reg.data)
+
+
+```
+```{r}
+election.reg$reg.pred <- reg.pred**(1/.22)
+election.reg
+```
+
+```{r}
+#Similar to the initial analysis and regularized regression models, create dataframes of predicted county and state values
+election.reg.county <- election.reg
+election.reg.state <- election.reg %>% group_by(state,candidate) %>% summarise(reg.pred=sum(reg.pred))
+
+#county.winner (predicted)
+pred.county.winner <- election.reg.county %>% 
+  group_by(county) %>% 
+  mutate(total=sum(reg.pred)) %>%
+  mutate(pct=reg.pred/total) %>%
+  top_n(n=1, wt=pct)
+pred.county.winner
+
+#state.winner (predicted)
+pred.state.winner <- election.reg.state %>%
+  group_by(state) %>%
+  mutate(total=sum(reg.pred)) %>%
+  mutate(pct=reg.pred/total) %>%
+  top_n(n=1, wt=pct)
+pred.state.winner
+```
+
+```{r}
+#Predicted Results
+states.join <- left_join(states, pred.state.winner)
+
+ggplot(data=states.join)+
+  geom_polygon(aes(x=long, y=lat, fill=candidate, group=group), color='white') +
+  coord_fixed(1.3) +
+  scale_fill_manual(values=c('orangered','steelblue')) + theme(legend.position='none')
+#added custom colors for aesthetic 
+```
+There's a tie in every state, likely because biden or trump predictors were not included in the final model.
+
+
+If further work in this analysis were to be considered, I would seriously include the inclusion of either the biden or trump dummy variables regardless of statistical signfigance. That seems to be the only way to make meaning of the difference of votes for each county.
+
+My knowledge of model building is admiteddly limited to my knowledge from my class on regression analysis, and I'd need to perform further study to make sure my process is correct. As far as I know, it is, but there's always room for improvement. As it stands, this model doesn't have enough information to make meaningful predictions on election results, though it does seem to perform well in predicting votes per county.
+
+
+
+_Final Thoughts_
+
+My work on classification seems to have done a better job in making accurate predictions towards election results. For that I can say it's relatively small error rate has me satisfied.
+
+Do the nature of the Transit predictor, counties with higher rates of transit IE more urban populations, ie higher rates of cities are very influential for the classification models, as well as the model in regression analysis.
+  
+  
